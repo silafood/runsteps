@@ -12,12 +12,6 @@ Interactive config-driven task runner for deployment and infrastructure workflow
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/silafood/runsteps/releases/latest/download/runsteps-installer.sh | sh
 ```
 
-### npm
-
-```sh
-npm install -g @silafood/runsteps
-```
-
 ### Homebrew
 
 ```sh
