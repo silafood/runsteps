@@ -20,6 +20,6 @@ install-path = "CARGO_HOME"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Whether to install an updater program
-install-updater = true
+install-updater = false
 # Allow extra CI files (e.g. web.yml) without failing validation
 allow-dirty = ["ci"]
