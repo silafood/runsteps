@@ -17,7 +17,7 @@ use picker::{filter_by_group, pick_steps, validate_dependencies};
 use preflight::ensure_just_available;
 
 #[derive(Parser)]
-#[command(name = "runsteps", about = "Interactive config-driven task runner")]
+#[command(name = "runsteps", about = "Interactive config-driven task runner", version)]
 pub struct Cli {
     /// Path to config file
     #[arg(short, long, default_value = "runsteps.toml")]
