@@ -5,7 +5,7 @@ edition = "2024"
 description = "Interactive config-driven task runner"
 license = "MIT"
 repository = "https://github.com/silafood/runsteps"
-homepage = "https://silafood.github.io/runsteps"
+homepage = "https://runsteps.silafood.app"
 readme = "README.md"
 
 [dependencies]
