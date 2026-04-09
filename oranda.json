@@ -1,0 +1,21 @@
+{
+  "project": {
+    "name": "runsteps",
+    "description": "Interactive config-driven task runner",
+    "homepage": "https://silafood.github.io/runsteps",
+    "repository": "https://github.com/silafood/runsteps"
+  },
+  "build": {
+    "path_prefix": "runsteps"
+  },
+  "components": {
+    "artifacts": {
+      "cargo_dist": true
+    },
+    "changelog": true,
+    "mdbook": false
+  },
+  "styles": {
+    "theme": "dark"
+  }
+}
