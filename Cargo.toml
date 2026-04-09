@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Interactive config-driven task runner"
 license = "MIT"
-repository = "https://github.com/zeroows/runsteps"
-homepage = "https://zeroows.github.io/runsteps"
+repository = "https://github.com/silafood/runsteps"
+homepage = "https://silafood.github.io/runsteps"
 readme = "README.md"
 
 [dependencies]
