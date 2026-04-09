@@ -46,43 +46,7 @@ on:
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
-  # Sync Cargo.toml version from the git tag before building
-  sync-version:
-    runs-on: "ubuntu-22.04"
-    if: ${{ !github.event.pull_request }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Update Cargo.toml version from tag
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          # Strip leading 'v' if present
-          VERSION="${TAG#v}"
-          echo "Setting version to ${VERSION}"
-          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          # Update Cargo.lock
-          cargo generate-lockfile
-      - name: Commit and push version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then
-            echo "Version already matches tag, no update needed"
-          else
-            git add Cargo.toml Cargo.lock
-            git commit -m "chore: bump version to ${GITHUB_REF_NAME#v}"
-            git push origin HEAD:master
-            # Move the tag to the new commit
-            git tag -f "${GITHUB_REF_NAME}"
-            git push origin "${GITHUB_REF_NAME}" --force
-          fi
-
   plan:
-    needs:
-      - sync-version
-    if: ${{ always() && (needs.sync-version.result == 'success' || needs.sync-version.result == 'skipped') }}
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
