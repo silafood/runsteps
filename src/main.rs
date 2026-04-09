@@ -97,12 +97,17 @@ fn run() -> Result<()> {
     let args = Cli::parse();
 
     if args.init {
-        let path = std::path::Path::new(&args.config);
+        let config_path = if !args.config.ends_with(".toml") {
+            format!("{}.toml", args.config)
+        } else {
+            args.config.clone()
+        };
+        let path = std::path::Path::new(&config_path);
         if path.exists() {
-            anyhow::bail!("{} already exists. Remove it first or use -c to specify a different path.", args.config);
+            anyhow::bail!("{} already exists. Remove it first or use -c to specify a different path.", config_path);
         }
         std::fs::write(path, TEMPLATE_CONFIG)?;
-        println!("Created {} — edit it with your steps, then run `runsteps`.", args.config);
+        println!("Created {} — edit it with your steps, then run `runsteps`.", config_path);
         return Ok(());
     }
 
