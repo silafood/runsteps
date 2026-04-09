@@ -42,6 +42,10 @@ pub struct Cli {
     /// Filter steps by group
     #[arg(short, long)]
     pub group: Option<String>,
+
+    /// Generate a template config file and exit
+    #[arg(long)]
+    pub init: bool,
 }
 
 fn main() {
@@ -62,8 +66,45 @@ fn main() {
     }
 }
 
+const TEMPLATE_CONFIG: &str = r#"[metadata]
+name = "my-project"
+description = "Project deployment workflow"
+# justfile = "./justfile"
+# working_directory = "."
+
+[[steps]]
+name = "build"
+description = "Build the project"
+command = "echo 'Building...'"
+group = "ci"
+
+[[steps]]
+name = "test"
+description = "Run tests"
+command = "echo 'Testing...'"
+group = "ci"
+
+[[steps]]
+name = "deploy"
+description = "Deploy to production"
+command = "echo 'Deploying...'"
+group = "deploy"
+confirm = true
+depends_on = ["build", "test"]
+"#;
+
 fn run() -> Result<()> {
     let args = Cli::parse();
+
+    if args.init {
+        let path = std::path::Path::new(&args.config);
+        if path.exists() {
+            anyhow::bail!("{} already exists. Remove it first or use -c to specify a different path.", args.config);
+        }
+        std::fs::write(path, TEMPLATE_CONFIG)?;
+        println!("Created {} — edit it with your steps, then run `runsteps`.", args.config);
+        return Ok(());
+    }
 
     // Load and validate config
     let config = load_config(&args.config)?;
