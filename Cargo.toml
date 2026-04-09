@@ -1,0 +1,20 @@
+[package]
+name = "runsteps"
+version = "0.1.0"
+edition = "2024"
+description = "Interactive config-driven task runner"
+license = "MIT"
+repository = "https://github.com/zeroows/runsteps"
+homepage = "https://zeroows.github.io/runsteps"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+console = "0.15"
+inquire = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.dist]
+inherits = "release"

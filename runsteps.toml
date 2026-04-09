@@ -1,0 +1,27 @@
+# Example config — replace with your actual steps
+
+[metadata]
+name = "my-project"
+description = "Project deployment workflow"
+justfile = "./justfile"
+working_directory = "."
+
+[[steps]]
+name = "add-helm-repo"
+description = "Add Helm chart repo and update"
+command = "helm repo add bitnami https://charts.bitnami.com/bitnami && helm repo update"
+group = "setup"
+
+[[steps]]
+name = "install-crds"
+description = "Install Custom Resource Definitions"
+just_recipe = "install-crds"
+group = "setup"
+
+[[steps]]
+name = "deploy"
+description = "Deploy via Helm with values"
+just_recipe = "deploy"
+group = "deploy"
+confirm = true
+depends_on = ["add-helm-repo"]
