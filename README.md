@@ -176,7 +176,7 @@ Include missing dependencies? [Y/n]
 
 ## More Examples
 
-See [docs/examples.md](./docs/examples.md) for complete configs:
+See [examples](https://github.com/silafood/runsteps/blob/master/docs/examples.md) for complete configs:
 
 1. Kubernetes deployment pipeline
 2. Rust project release workflow
@@ -185,4 +185,4 @@ See [docs/examples.md](./docs/examples.md) for complete configs:
 
 ## License
 
-MIT — see [LICENSE](./LICENSE)
+MIT — see [LICENSE](https://github.com/silafood/runsteps/blob/master/LICENSE)
