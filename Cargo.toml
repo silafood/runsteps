@@ -22,7 +22,7 @@ inherits = "release"
 # cargo-release configuration:
 # Run `cargo release 0.1.5 --execute` to bump version, commit, tag, and push.
 # The tag push triggers the cargo-dist release workflow.
-[workspace.metadata.release]
+[package.metadata.release]
 # We don't publish to crates.io — cargo-dist handles GitHub releases + Homebrew.
 publish = false
 # Tag format matches what release.yml expects: v0.1.5
@@ -31,5 +31,3 @@ tag-name = "v{{version}}"
 push = true
 # Allow running from master (cargo-release defaults to refusing non-main branches).
 allow-branch = ["master"]
-# Skip pre-release checks for dependencies since we're a leaf binary.
-dependent-version = "ignore"
