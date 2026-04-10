@@ -21,7 +21,7 @@ pub fn execute_step(step: &Step, meta: &Metadata, skip_confirm: bool) -> Result<
         if let Some(wd) = &meta.working_directory {
             cmd.current_dir(wd);
         }
-        cmd.arg(recipe).status()?
+        cmd.arg("--no-deps").arg(recipe).status()?
     } else if let Some(command) = &step.command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command);
@@ -50,7 +50,7 @@ pub fn dry_run_step(step: &Step, meta: &Metadata) {
             .as_deref()
             .map(|jf| format!("--justfile {} ", jf))
             .unwrap_or_default();
-        format!("just {}{}", justfile_arg, recipe)
+        format!("just {}--no-deps {}", justfile_arg, recipe)
     } else if let Some(command) = &step.command {
         format!("sh -c '{}'", command)
     } else {

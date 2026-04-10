@@ -166,11 +166,18 @@ fn run() -> Result<()> {
         }
     }
 
-    // Execute
+    // Execute — state machine tracks which steps have run; skips duplicates
+    let mut executed: std::collections::HashSet<String> = std::collections::HashSet::new();
     for step in &selected {
+        if executed.contains(&step.name) {
+            continue;
+        }
         print_step_header(step);
         match execute_step(step, &config.metadata, args.yes) {
-            Ok(()) => print_success(step),
+            Ok(()) => {
+                print_success(step);
+                executed.insert(step.name.clone());
+            }
             Err(e) => {
                 print_failure(step);
                 return Err(e);
