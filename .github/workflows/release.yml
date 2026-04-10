@@ -60,13 +60,6 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Sync version from tag
-        if: ${{ !github.event.pull_request }}
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" Cargo.toml
-          sed -i "/^name = \"runsteps\"$/{n;s/version = \"[^\"]*\"/version = \"${VERSION}\"/}" Cargo.lock
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -127,13 +120,6 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Sync version from tag
-        if: ${{ !github.event.pull_request }}
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" Cargo.toml
-          sed -i "/^name = \"runsteps\"$/{n;s/version = \"[^\"]*\"/version = \"${VERSION}\"/}" Cargo.lock
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -336,34 +322,6 @@ jobs:
             git add "Formula/${filename}"
             git commit -m "${name} ${version}"
           done
-          git push
-
-  # Commit the version-bumped Cargo.toml and Cargo.lock back to master
-  sync-version:
-    needs:
-      - host
-    if: ${{ !github.event.pull_request }}
-    runs-on: "ubuntu-22.04"
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          persist-credentials: true
-          submodules: recursive
-      - name: Bump version and commit
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" Cargo.toml
-          sed -i "/^name = \"runsteps\"$/{n;s/version = \"[^\"]*\"/version = \"${VERSION}\"/}" Cargo.lock
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          git diff --staged --quiet || git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push
 
   announce:
