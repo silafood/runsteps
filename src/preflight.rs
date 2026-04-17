@@ -1,5 +1,6 @@
 use crate::config::Step;
 use anyhow::Result;
+use std::io::IsTerminal;
 use std::process::Command;
 
 pub fn ensure_just_available(steps: &[Step]) -> Result<()> {
@@ -22,6 +23,12 @@ pub fn ensure_just_available(steps: &[Step]) -> Result<()> {
             eprintln!("    brew install just");
             eprintln!("    curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin");
             eprintln!();
+
+            // Non-interactive contexts (CI, piped stdin): bail with instructions
+            // rather than hanging or crashing on an inquire prompt.
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!("Cannot proceed without `just`. Install it and re-run.");
+            }
 
             let install = inquire::Confirm::new("Attempt `cargo install just` now?")
                 .with_default(false)
@@ -54,9 +61,15 @@ mod tests {
             description: "desc".to_string(),
             command: Some("echo test".to_string()),
             just_recipe: None,
+            just_no_deps: None,
             group: None,
             confirm: false,
             depends_on: vec![],
+            args: vec![],
+            prompts: std::collections::HashMap::new(),
+            raw: false,
+            env: std::collections::HashMap::new(),
+            parallel: false,
         }
     }
 

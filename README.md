@@ -4,6 +4,12 @@ Interactive config-driven task runner for deployment and infrastructure workflow
 
 `runsteps` reads a TOML config that defines named steps — each either a shell command or a [just](https://github.com/casey/just) recipe — and presents an interactive multi-select picker so you choose which steps to run. It handles step ordering, dependency validation, per-step confirmation prompts, and grouped output.
 
+## For AI assistants
+
+- **JSON Schema**: https://runsteps.silafood.app/schema.json (draft-07, paste as `#:schema` preamble into any `runsteps.toml` for IDE LSP support via taplo/tombi/even-better-toml).
+- **Documentation bundle**: https://runsteps.silafood.app/llms.txt (structured TOC) and https://runsteps.silafood.app/llms-full.txt (full docs concatenated for LLM context).
+- **Machine-readable changelog**: https://runsteps.silafood.app/changelog/ (generated from CHANGELOG.md).
+
 ## Install
 
 ### Shell (macOS/Linux)

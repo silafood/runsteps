@@ -1,14 +1,103 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub metadata: Metadata,
-    pub steps: Vec<Step>,
+/// All field names across Metadata and Step structs that exist after Phase A (US-002, US-003).
+///
+/// MAINTENANCE: If you add a field to Metadata or Step, you MUST add it here too.
+/// The drift tests `known_keys_covers_struct_fields` and `known_keys_only_contains_real_fields`
+/// enforce this in both directions.
+pub const KNOWN_KEYS: &[&str] = &[
+    // Metadata fields
+    "name",
+    "description",
+    "justfile",
+    "working_directory",
+    // Step fields
+    "args",
+    "command",
+    "confirm",
+    "depends_on",
+    "env",
+    "group",
+    "just_no_deps",
+    "just_recipe",
+    "parallel",
+    "prompts",
+    "raw",
+    // Profile fields
+    "skip_confirms",
+    "excluded_steps",
+    "groups",
+];
+
+/// Top-level table names in runsteps.toml (used for suggestion when an unknown
+/// key appears at the Config level rather than inside a table).
+const KNOWN_TOP_LEVEL_KEYS: &[&str] = &["metadata", "steps", "profiles"];
+
+/// Suggest the closest key from a key list for an unknown field name.
+/// Returns Some(suggestion) if Damerau-Levenshtein distance <= max(2, ceil(target_len / 3)).
+fn suggest_from(unknown: &str, keys: &[&'static str]) -> Option<&'static str> {
+    let threshold = std::cmp::max(2, unknown.len().div_ceil(3));
+    keys.iter()
+        .map(|&k| (k, strsim::damerau_levenshtein(unknown, k)))
+        .filter(|&(_, d)| d <= threshold)
+        .min_by_key(|&(_, d)| d)
+        .map(|(k, _)| k)
+}
+
+/// Suggest the closest key in KNOWN_KEYS (field names) for an unknown field name.
+/// Used in unit tests and available for future callers (e.g. schema subcommand).
+#[allow(dead_code)]
+pub fn suggest_key(unknown: &str) -> Option<&'static str> {
+    suggest_from(unknown, KNOWN_KEYS)
+}
+
+/// Suggest from both field names and top-level table names combined.
+/// For top-level keys, also tries prefix matching (e.g. "meta" → "metadata").
+fn suggest_any_key(unknown: &str) -> Option<&'static str> {
+    // Prefix match against top-level keys (handles "meta" → "metadata", "step" → "steps")
+    let prefix_match = KNOWN_TOP_LEVEL_KEYS
+        .iter()
+        .find(|&&k| k.starts_with(unknown) || unknown.starts_with(k))
+        .copied();
+    if prefix_match.is_some() {
+        return prefix_match;
+    }
+    // Distance-based match against top-level keys then field-level keys
+    suggest_from(unknown, KNOWN_TOP_LEVEL_KEYS)
+        .or_else(|| suggest_from(unknown, KNOWN_KEYS))
+}
+
+/// A named profile that adjusts step selection and confirmation behavior.
+///
+/// Profiles are activated with `--profile <name>`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    /// When true, all `confirm = true` steps skip the per-step prompt within this profile.
+    #[serde(default)]
+    pub skip_confirms: bool,
+    /// Step names to exclude from selection when this profile is active.
+    #[serde(default)]
+    pub excluded_steps: Vec<String>,
+    /// When non-empty, restricts the picker to steps whose group is in this list.
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub metadata: Metadata,
+    pub steps: Vec<Step>,
+    /// Named profiles for pre-configured step sets.
+    #[serde(default)]
+    pub profiles: HashMap<String, Profile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
     pub description: Option<String>,
@@ -17,6 +106,7 @@ pub struct Metadata {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     pub name: String,
     pub description: String,
@@ -24,12 +114,35 @@ pub struct Step {
     pub command: Option<String>,
     #[serde(default)]
     pub just_recipe: Option<String>,
+    /// When `true`, passes `--no-deps` to `just`, skipping the recipe's prerequisites.
+    /// Set this to restore v0.1.x isolation behavior for a specific step.
+    /// Has no effect on `command` steps.
+    #[serde(default)]
+    pub just_no_deps: Option<bool>,
     #[serde(default)]
     pub group: Option<String>,
     #[serde(default)]
     pub confirm: bool,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Additional arguments passed to the command or just recipe.
+    /// Supports `{{placeholder}}` interpolation resolved from `--var` or `prompts`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Map of placeholder name to human-readable prompt text for interactive resolution.
+    #[serde(default)]
+    pub prompts: HashMap<String, String>,
+    /// When `true`, skip shell-escaping of substituted values in `command` steps.
+    #[serde(default)]
+    pub raw: bool,
+    /// Environment variables merged into the child process environment.
+    /// Values support `{{placeholder}}` interpolation. No tilde or $VAR expansion.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// When `true`, this step may execute concurrently with other `parallel = true`
+    /// steps that have no dependency relationship.
+    #[serde(default)]
+    pub parallel: bool,
 }
 
 impl std::fmt::Display for Step {
@@ -82,12 +195,50 @@ impl Config {
     }
 }
 
+/// Parse a toml::de::Error to extract an unknown field name if the error message
+/// matches the toml 0.8 format: `unknown field `X`, expected one of `...``
+fn extract_unknown_field(msg: &str) -> Option<&str> {
+    // toml 0.8 format: "unknown field `fieldname`, ..."
+    let after = msg.strip_prefix("unknown field `")?;
+    let end = after.find('`')?;
+    Some(&after[..end])
+}
+
 pub fn load_config(path: &str) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Cannot read config '{}': {}", path, e))?;
-    let config: Config = toml::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("Invalid TOML in '{}': {}", path, e))?;
-    Ok(config)
+
+    toml::from_str::<Config>(&content).map_err(|e| {
+        let msg = e.message();
+        let span_info = e
+            .span()
+            .map(|s| {
+                // Compute line:col from byte span start
+                let before = &content[..s.start.min(content.len())];
+                let line = before.lines().count();
+                let col = before.rfind('\n').map(|p| s.start - p - 1).unwrap_or(s.start) + 1;
+                format!("{}:{}:{}", path, line, col)
+            })
+            .unwrap_or_else(|| path.to_string());
+
+        if let Some(unknown) = extract_unknown_field(msg) {
+            match suggest_any_key(unknown) {
+                Some(suggestion) => {
+                    eprintln!("error: unknown field `{}` in {}", unknown, span_info);
+                    eprintln!("  did you mean `{}`?", suggestion);
+                }
+                None => {
+                    let keys = KNOWN_KEYS.join(", ");
+                    eprintln!("error: unknown field `{}` in {}", unknown, span_info);
+                    eprintln!("  known keys: {}", keys);
+                }
+            }
+        } else {
+            eprintln!("error: invalid TOML in {}: {}", span_info, msg);
+        }
+
+        anyhow::anyhow!("Failed to parse config '{}'", path)
+    })
 }
 
 #[cfg(test)]
@@ -100,9 +251,15 @@ mod tests {
             description: format!("{} desc", name),
             command: command.map(String::from),
             just_recipe: just_recipe.map(String::from),
+            just_no_deps: None,
             group: None,
             confirm: false,
             depends_on: vec![],
+            args: vec![],
+            prompts: HashMap::new(),
+            raw: false,
+            env: HashMap::new(),
+            parallel: false,
         }
     }
 
@@ -147,6 +304,37 @@ command = "echo hello"
     }
 
     #[test]
+    fn test_deserialize_just_no_deps() {
+        let toml = r#"
+[metadata]
+name = "test"
+
+[[steps]]
+name = "isolated"
+description = "Run without prereqs"
+just_recipe = "deploy"
+just_no_deps = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.steps[0].just_no_deps, Some(true));
+    }
+
+    #[test]
+    fn test_deserialize_just_no_deps_default() {
+        let toml = r#"
+[metadata]
+name = "test"
+
+[[steps]]
+name = "normal"
+description = "Normal recipe"
+just_recipe = "deploy"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.steps[0].just_no_deps, None);
+    }
+
+    #[test]
     fn test_step_display() {
         let step = make_step("deploy", Some("make deploy"), None);
         assert_eq!(format!("{}", step), "deploy: deploy desc");
@@ -162,6 +350,7 @@ command = "echo hello"
                 working_directory: None,
             },
             steps: vec![make_step("a", Some("echo a"), None)],
+            profiles: HashMap::new(),
         };
         assert!(config.validate().is_ok());
     }
@@ -176,6 +365,7 @@ command = "echo hello"
                 working_directory: None,
             },
             steps: vec![],
+            profiles: HashMap::new(),
         };
         assert!(config.validate().is_err());
     }
@@ -194,10 +384,17 @@ command = "echo hello"
                 description: "bad".to_string(),
                 command: None,
                 just_recipe: None,
+                just_no_deps: None,
                 group: None,
                 confirm: false,
                 depends_on: vec![],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("neither"));
@@ -217,10 +414,17 @@ command = "echo hello"
                 description: "bad".to_string(),
                 command: Some("echo".to_string()),
                 just_recipe: Some("recipe".to_string()),
+                just_no_deps: None,
                 group: None,
                 confirm: false,
                 depends_on: vec![],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("both"));
@@ -239,6 +443,7 @@ command = "echo hello"
                 make_step("dup", Some("echo 1"), None),
                 make_step("dup", Some("echo 2"), None),
             ],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("Duplicate"));
@@ -258,12 +463,127 @@ command = "echo hello"
                 description: "b".to_string(),
                 command: Some("echo b".to_string()),
                 just_recipe: None,
+                just_no_deps: None,
                 group: None,
                 confirm: false,
                 depends_on: vec!["nonexistent".to_string()],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("unknown step"));
+    }
+
+    // -----------------------------------------------------------------------
+    // KNOWN_KEYS drift tests
+    // -----------------------------------------------------------------------
+
+    /// Hand-maintained list of all Metadata struct fields.
+    /// MAINTENANCE: If you add a field to Metadata, update this list AND KNOWN_KEYS.
+    fn metadata_fields() -> Vec<&'static str> {
+        vec!["name", "description", "justfile", "working_directory"]
+    }
+
+    /// Hand-maintained list of all Step struct fields.
+    /// MAINTENANCE: If you add a field to Step, update this list AND KNOWN_KEYS.
+    fn step_fields() -> Vec<&'static str> {
+        vec![
+            "name",
+            "description",
+            "command",
+            "just_recipe",
+            "just_no_deps",
+            "group",
+            "confirm",
+            "depends_on",
+            "args",
+            "prompts",
+            "raw",
+            "env",
+            "parallel",
+        ]
+    }
+
+    /// Hand-maintained list of all Profile struct fields.
+    /// MAINTENANCE: If you add a field to Profile, update this list AND KNOWN_KEYS.
+    fn profile_fields() -> Vec<&'static str> {
+        vec!["skip_confirms", "excluded_steps", "groups"]
+    }
+
+    /// Every struct field must appear in KNOWN_KEYS (forward drift check).
+    #[test]
+    fn known_keys_covers_struct_fields() {
+        let all_fields: Vec<&str> = metadata_fields()
+            .into_iter()
+            .chain(step_fields())
+            .chain(profile_fields())
+            .collect();
+
+        let key_set: HashSet<&str> = KNOWN_KEYS.iter().copied().collect();
+
+        let missing: Vec<&str> = all_fields
+            .into_iter()
+            .filter(|f| !key_set.contains(f))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "These struct fields are missing from KNOWN_KEYS: {:?}",
+            missing
+        );
+    }
+
+    /// Every KNOWN_KEYS entry must correspond to a real struct field (reciprocal drift check).
+    #[test]
+    fn known_keys_only_contains_real_fields() {
+        let all_fields: HashSet<&str> = metadata_fields()
+            .into_iter()
+            .chain(step_fields())
+            .chain(profile_fields())
+            .collect();
+
+        let phantom: Vec<&str> = KNOWN_KEYS
+            .iter()
+            .copied()
+            .filter(|k| !all_fields.contains(k))
+            .collect();
+
+        assert!(
+            phantom.is_empty(),
+            "KNOWN_KEYS references non-existent fields: {:?}",
+            phantom
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // suggest_key tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_key_metadata_typo() {
+        // "meta" is not in KNOWN_KEYS (metadata is not a field name — it's a table name).
+        // "meta" has distance 4 from "name", 3 from "group" — threshold for len=4 is max(2,2)=2.
+        // No key is close enough, so None is correct.
+        assert_eq!(suggest_key("meta"), None);
+        // Close typos of actual KNOWN_KEYS entries
+        assert_eq!(suggest_key("just_recipee"), Some("just_recipe"));
+        assert_eq!(suggest_key("comand"), Some("command"));
+        assert_eq!(suggest_key("confirn"), Some("confirm"));
+    }
+
+    #[test]
+    fn suggest_key_no_match_returns_none() {
+        assert_eq!(suggest_key("completely_bogus_field_xyz"), None);
+    }
+
+    #[test]
+    fn extract_unknown_field_parses_toml_error() {
+        let msg = "unknown field `meta`, expected one of `name`, `description`";
+        assert_eq!(extract_unknown_field(msg), Some("meta"));
     }
 }
