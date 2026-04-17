@@ -54,6 +54,7 @@ mod tests {
             description: "desc".to_string(),
             command: Some("echo test".to_string()),
             just_recipe: None,
+            just_no_deps: None,
             group: None,
             confirm: false,
             depends_on: vec![],
