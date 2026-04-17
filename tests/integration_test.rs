@@ -1587,3 +1587,398 @@ env = { FOO = "bar" }
         "dry-run should print env lines, got: {combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// US-010: graph subcommand
+// ---------------------------------------------------------------------------
+
+#[test]
+fn graph_exits_zero_and_contains_step_names() {
+    let dir = tmpdir("graph-basic");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "graph-test"
+
+[[steps]]
+name = "setup"
+description = "Setup step"
+command = "echo setup"
+group = "setup"
+
+[[steps]]
+name = "build"
+description = "Build step"
+command = "echo build"
+group = "ci"
+depends_on = ["setup"]
+
+[[steps]]
+name = "deploy"
+description = "Deploy step"
+command = "echo deploy"
+group = "deploy"
+depends_on = ["build"]
+"#,
+    )
+    .unwrap();
+
+    let out = run(&["graph", "-c", "runsteps.toml"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(combined.contains("setup"), "graph output missing 'setup'");
+    assert!(combined.contains("build"), "graph output missing 'build'");
+    assert!(combined.contains("deploy"), "graph output missing 'deploy'");
+}
+
+#[test]
+fn graph_cycle_exits_2_with_cycle_message() {
+    let dir = tmpdir("graph-cycle");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "cycle-test"
+
+[[steps]]
+name = "a"
+description = "Step a"
+command = "echo a"
+depends_on = ["b"]
+
+[[steps]]
+name = "b"
+description = "Step b"
+command = "echo b"
+depends_on = ["a"]
+"#,
+    )
+    .unwrap();
+
+    let out = run(&["graph", "-c", "runsteps.toml"], &dir);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit code 2 for cycle, got {:?}",
+        out.status.code()
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("cycle detected:"),
+        "expected 'cycle detected:' in stderr, got: {err}"
+    );
+    assert!(
+        err.contains("a") && err.contains("b"),
+        "expected both step names in cycle message, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-014: profiles
+// ---------------------------------------------------------------------------
+
+#[test]
+fn profile_skip_confirms_auto_accepts_confirm_step() {
+    let dir = tmpdir("profile-skip-confirms");
+    let marker = dir.join("ran.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "profile-test"
+
+[[steps]]
+name = "dangerous"
+description = "Needs confirmation"
+command = "touch {path}"
+confirm = true
+
+[profiles.ci]
+skip_confirms = true
+"#,
+        path = marker.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+
+    // With --profile ci and --all (no --yes), confirm should be auto-skipped.
+    let out = run(&["--all", "--profile", "ci", "-c", "runsteps.toml"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        marker.exists(),
+        "confirm=true step should run without prompt under profile with skip_confirms=true"
+    );
+}
+
+#[test]
+fn profile_groups_restricts_to_matching_steps() {
+    let dir = tmpdir("profile-groups");
+    let log = dir.join("log.txt");
+    fs::write(&log, "").unwrap();
+    let config = format!(
+        r#"
+[metadata]
+name = "profile-groups-test"
+
+[[steps]]
+name = "setup-step"
+description = "Setup"
+command = "printf 'setup\n' >> {path}"
+group = "setup"
+
+[[steps]]
+name = "deploy-step"
+description = "Deploy"
+command = "printf 'deploy\n' >> {path}"
+group = "deploy"
+
+[[steps]]
+name = "test-step"
+description = "Test"
+command = "printf 'test\n' >> {path}"
+group = "test"
+
+[profiles.staging]
+groups = ["setup", "deploy"]
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+
+    let out = run(
+        &["--all", "--yes", "--profile", "staging", "-c", "runsteps.toml"],
+        &dir,
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap();
+    assert!(content.contains("setup"), "setup step should run under staging profile");
+    assert!(content.contains("deploy"), "deploy step should run under staging profile");
+    assert!(!content.contains("test"), "test step should NOT run under staging profile");
+}
+
+#[test]
+fn profile_excluded_steps_removes_step_from_all() {
+    let dir = tmpdir("profile-excluded");
+    let log = dir.join("log.txt");
+    fs::write(&log, "").unwrap();
+    let config = format!(
+        r#"
+[metadata]
+name = "profile-excluded-test"
+
+[[steps]]
+name = "safe-step"
+description = "Safe"
+command = "printf 'safe\n' >> {path}"
+
+[[steps]]
+name = "drop-db"
+description = "Dangerous!"
+command = "printf 'dropped\n' >> {path}"
+
+[profiles.safe]
+excluded_steps = ["drop-db"]
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+
+    let out = run(
+        &["--all", "--yes", "--profile", "safe", "-c", "runsteps.toml"],
+        &dir,
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap();
+    assert!(content.contains("safe"), "safe step should run");
+    assert!(!content.contains("dropped"), "drop-db should be excluded by profile");
+}
+
+#[test]
+fn profile_unknown_exits_2_with_error_message() {
+    let dir = tmpdir("profile-unknown");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "profile-unknown-test"
+
+[[steps]]
+name = "s"
+description = "d"
+command = "echo s"
+
+[profiles.ci]
+skip_confirms = true
+"#,
+    )
+    .unwrap();
+
+    let out = run(
+        &["--all", "--yes", "--profile", "nonexistent", "-c", "runsteps.toml"],
+        &dir,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit code 2 for unknown profile"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("unknown profile"),
+        "expected 'unknown profile' in stderr, got: {err}"
+    );
+    assert!(
+        err.contains("nonexistent"),
+        "expected profile name in stderr, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-015: parallel execution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parallel_steps_complete_faster_than_sequential() {
+    let dir = tmpdir("parallel-timing");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "parallel-timing-test"
+
+[[steps]]
+name = "slow-a"
+description = "Slow step A"
+command = "sleep 2 && echo done-a"
+parallel = true
+
+[[steps]]
+name = "slow-b"
+description = "Slow step B"
+command = "sleep 2 && echo done-b"
+parallel = true
+"#,
+    )
+    .unwrap();
+
+    let start = std::time::Instant::now();
+    let out = run(&["--all", "--yes"], &dir);
+    let elapsed = start.elapsed();
+
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    // Two 2s steps should finish in <3s if run in parallel, not ~4s if sequential.
+    assert!(
+        elapsed.as_secs() < 4,
+        "parallel steps took {}s, expected <4s",
+        elapsed.as_secs()
+    );
+}
+
+#[test]
+fn parallel_both_step_outputs_appear() {
+    let dir = tmpdir("parallel-output");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "parallel-output-test"
+
+[[steps]]
+name = "step-alpha"
+description = "Alpha"
+command = "echo alpha-output"
+parallel = true
+
+[[steps]]
+name = "step-beta"
+description = "Beta"
+command = "echo beta-output"
+parallel = true
+"#,
+    )
+    .unwrap();
+
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("alpha-output"),
+        "alpha output missing, got: {}",
+        &combined[..combined.len().min(500)]
+    );
+    assert!(
+        combined.contains("beta-output"),
+        "beta output missing, got: {}",
+        &combined[..combined.len().min(500)]
+    );
+}
+
+#[test]
+fn parallel_failure_exits_nonzero() {
+    let dir = tmpdir("parallel-fail");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "parallel-fail-test"
+
+[[steps]]
+name = "fail-step"
+description = "Always fails"
+command = "exit 1"
+parallel = true
+
+[[steps]]
+name = "ok-step"
+description = "Would succeed"
+command = "echo ok"
+parallel = true
+"#,
+    )
+    .unwrap();
+
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(
+        !out.status.success(),
+        "expected nonzero exit when a parallel step fails"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("fail-step") || err.contains("failed"),
+        "expected failure step name in stderr, got: {err}"
+    );
+}
+
+#[test]
+fn sequential_behavior_unchanged_without_parallel_flag() {
+    let dir = tmpdir("sequential-regression");
+    let log = dir.join("log.txt");
+    fs::write(&log, "").unwrap();
+    let config = format!(
+        r#"
+[metadata]
+name = "sequential-test"
+
+[[steps]]
+name = "first"
+description = "First"
+command = "printf '1\n' >> {path}"
+
+[[steps]]
+name = "second"
+description = "Second"
+command = "printf '2\n' >> {path}"
+
+[[steps]]
+name = "third"
+description = "Third"
+command = "printf '3\n' >> {path}"
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap();
+    assert_eq!(content, "1\n2\n3\n", "sequential order broken: {content}");
+}
