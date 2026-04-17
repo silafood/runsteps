@@ -143,11 +143,11 @@ pub enum Commands {
     Init(InitArgs),
     /// List available steps
     List(ListArgs),
-    /// Show step dependency graph [coming in Phase D]
+    /// Show step dependency graph as an ASCII DAG (exits 2 on cycle)
     Graph(GraphArgs),
     /// Generate shell completions
     Completions(CompletionsArgs),
-    /// Re-run the last successful session [coming in Phase C]
+    /// Re-run the last interactive selection for this config
     Again(AgainArgs),
 }
 
