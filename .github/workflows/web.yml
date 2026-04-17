@@ -21,11 +21,119 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build runsteps for schema generation
+        run: cargo build --release --quiet
+
+      - name: Generate schema.json (before oranda build)
+        run: |
+          mkdir -p public
+          ./target/release/runsteps schema --json > public/schema.json
+
       - name: Install oranda
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/oranda/releases/latest/download/oranda-installer.sh | sh
 
       - name: Build site
         run: oranda build
+
+      - name: Generate llms.txt TOC
+        run: |
+          cat > public/llms.txt <<'EOF'
+          # runsteps — interactive config-driven task runner
+
+          > runsteps reads a TOML config defining named steps (shell commands or `just` recipes),
+          > shows an interactive multi-select picker, and runs the chosen steps in order with
+          > dependency resolution, confirmations, groups, placeholders, and optional parallelism.
+
+          ## Docs
+          - [README](https://runsteps.silafood.app/) — install, quick start, CLI usage
+          - [SCHEMA.md](https://runsteps.silafood.app/schema/) — canonical TOML schema
+          - [CHANGELOG](https://runsteps.silafood.app/changelog/) — release notes
+          - [ADR-001](https://runsteps.silafood.app/adr/001/) — runsteps owns the graph; just is a step executor
+          - [ADR-002](https://runsteps.silafood.app/adr/002/) — placeholder syntax
+          - [Migration 0.2 --no-deps](https://runsteps.silafood.app/migrations/0.2-no-deps/)
+
+          ## Machine-readable
+          - https://runsteps.silafood.app/schema.json — JSON Schema draft-07 for runsteps.toml
+
+          ## Config preamble for IDE support (taplo/tombi/even-better-toml)
+          ```toml
+          #:schema https://runsteps.silafood.app/schema.json
+
+          [metadata]
+          name = "my-project"
+          # ...
+          ```
+          EOF
+
+      - name: Generate llms-full.txt bundle
+        run: |
+          {
+            echo "# runsteps — full documentation bundle for LLM context"
+            echo ""
+            echo "---"
+            echo "## README.md"
+            echo ""
+            cat README.md
+            echo ""
+            echo "---"
+            echo "## SCHEMA.md"
+            echo ""
+            cat SCHEMA.md
+            echo ""
+            echo "---"
+            echo "## CHANGELOG.md"
+            echo ""
+            cat CHANGELOG.md
+            echo ""
+            echo "---"
+            echo "## docs/adr/001-standalone-task-runner.md"
+            echo ""
+            cat docs/adr/001-standalone-task-runner.md
+            echo ""
+            echo "---"
+            echo "## docs/adr/002-placeholder-syntax.md"
+            echo ""
+            cat docs/adr/002-placeholder-syntax.md
+            echo ""
+            echo "---"
+            echo "## docs/migrations/0.2-no-deps.md"
+            echo ""
+            cat docs/migrations/0.2-no-deps.md
+          } > public/llms-full.txt
+          SIZE=$(wc -c < public/llms-full.txt)
+          if [ "$SIZE" -gt 131072 ]; then
+            echo "warning: llms-full.txt is $SIZE bytes (>128KB) — consider trimming"
+          fi
+
+      - name: Inject JSON-LD SoftwareApplication metadata
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re
+          path = pathlib.Path("public/index.html")
+          if not path.exists():
+              raise SystemExit("public/index.html missing — did oranda build fail?")
+          html = path.read_text()
+          jsonld = {
+              "@context": "https://schema.org",
+              "@type": "SoftwareApplication",
+              "name": "runsteps",
+              "operatingSystem": "macOS, Linux",
+              "applicationCategory": "DeveloperApplication",
+              "description": "Interactive config-driven task runner that wraps just recipes and shell commands behind a multi-select TUI picker.",
+              "url": "https://runsteps.silafood.app",
+              "codeRepository": "https://github.com/silafood/runsteps",
+              "programmingLanguage": "Rust",
+              "license": "https://opensource.org/licenses/MIT",
+              "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+          }
+          block = f'<script type="application/ld+json">{json.dumps(jsonld)}</script>'
+          if "application/ld+json" not in html:
+              html = html.replace("</head>", f"{block}</head>", 1)
+              path.write_text(html)
+          PY
 
       - name: Add CNAME for custom domain
         run: echo "runsteps.silafood.app" > public/CNAME
