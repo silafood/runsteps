@@ -6,6 +6,7 @@ mod display;
 mod executor;
 mod picker;
 mod preflight;
+mod schema;
 
 use config::load_config;
 use display::{
