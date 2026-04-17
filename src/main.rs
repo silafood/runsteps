@@ -409,7 +409,9 @@ fn run_again(args: &AgainArgs) -> Result<()> {
         eprintln!("warning: config has changed since last run (SHA-256 mismatch)");
     }
 
-    ensure_just_available(&config.steps)?;
+    if !args.dry_run {
+        ensure_just_available(&config.steps)?;
+    }
     print_banner(&config.metadata);
 
     let vars = resolver::parse_var_flags(&args.var)?;
@@ -479,7 +481,11 @@ fn run_run(args: &RunArgs) -> Result<()> {
     // Resolve profile early so we can exit 2 before doing any real work.
     let profile = resolve_profile(&config, args.profile.as_deref());
 
-    ensure_just_available(&config.steps)?;
+    // Dry-run doesn't actually invoke `just`; skip the preflight so users
+    // can preview configs on machines without `just` installed.
+    if !args.dry_run {
+        ensure_just_available(&config.steps)?;
+    }
 
     let vars = resolver::parse_var_flags(&args.var)?;
 
