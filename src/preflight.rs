@@ -62,6 +62,7 @@ mod tests {
             prompts: std::collections::HashMap::new(),
             raw: false,
             env: std::collections::HashMap::new(),
+            parallel: false,
         }
     }
 

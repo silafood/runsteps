@@ -5,6 +5,7 @@ use clap_complete::Shell;
 mod config;
 mod display;
 mod executor;
+mod graph;
 mod history;
 mod picker;
 mod preflight;
@@ -16,7 +17,7 @@ use display::{
     print_banner, print_dry_run_header, print_failure, print_step_header, print_step_list,
     print_success,
 };
-use executor::{dry_run_step, execute_step};
+use executor::{dry_run_step, execute_parallel_group, execute_step};
 use picker::{filter_by_group, pick_steps, validate_dependencies};
 use preflight::ensure_just_available;
 
@@ -61,6 +62,10 @@ pub struct RunArgs {
     /// Set a placeholder value: --var key=value (repeatable)
     #[arg(long, action = clap::ArgAction::Append, num_args = 1..)]
     pub var: Vec<String>,
+
+    /// Activate a named profile from [profiles.<name>] in the config
+    #[arg(long)]
+    pub profile: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -97,6 +102,10 @@ pub struct GraphArgs {
     /// Filter by group
     #[arg(short, long)]
     pub group: Option<String>,
+
+    /// Path to config file
+    #[arg(short, long, default_value = "runsteps.toml")]
+    pub config: String,
 }
 
 #[derive(Parser, Debug)]
@@ -122,6 +131,10 @@ pub struct AgainArgs {
     /// Set a placeholder value: --var key=value (repeatable)
     #[arg(long, action = clap::ArgAction::Append, num_args = 1..)]
     pub var: Vec<String>,
+
+    /// Activate a named profile from [profiles.<name>] in the config
+    #[arg(long)]
+    pub profile: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -346,9 +359,51 @@ fn run_completions(args: &CompletionsArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_graph(_args: &GraphArgs) -> Result<()> {
-    eprintln!("graph subcommand is not yet implemented (coming in Phase D)");
-    std::process::exit(2);
+fn run_graph(args: &GraphArgs) -> Result<()> {
+    let config = load_config(&args.config)?;
+    config.validate()?;
+    match graph::render_ascii(&config, args.group.as_deref()) {
+        Ok(output) => {
+            print!("{}", output);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Resolve an optional profile name and return the profile (or default empty).
+/// Exits with code 2 if the profile name is not found.
+fn resolve_profile<'a>(
+    config: &'a config::Config,
+    profile_name: Option<&str>,
+) -> &'a config::Profile {
+    static DEFAULT_PROFILE: std::sync::OnceLock<config::Profile> = std::sync::OnceLock::new();
+    let default = DEFAULT_PROFILE.get_or_init(config::Profile::default);
+
+    match profile_name {
+        None => default,
+        Some(name) => match config.profiles.get(name) {
+            Some(p) => p,
+            None => {
+                let available: Vec<&str> = config.profiles.keys().map(|k| k.as_str()).collect();
+                let mut sorted = available.clone();
+                sorted.sort();
+                eprintln!(
+                    "error: unknown profile '{}'; available: {}",
+                    name,
+                    if sorted.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        sorted.join(", ")
+                    }
+                );
+                std::process::exit(2);
+            }
+        },
+    }
 }
 
 fn run_again(args: &AgainArgs) -> Result<()> {
@@ -435,6 +490,7 @@ fn run_run(args: &RunArgs) -> Result<()> {
             yes: args.yes,
             dry_run: args.dry_run,
             var: args.var.clone(),
+            profile: args.profile.clone(),
         };
         return run_again(&again_args);
     }
@@ -442,19 +498,60 @@ fn run_run(args: &RunArgs) -> Result<()> {
     let config = load_config(&args.config)?;
     config.validate()?;
 
+    // Resolve profile early so we can exit 2 before doing any real work.
+    let profile = resolve_profile(&config, args.profile.as_deref());
+
     ensure_just_available(&config.steps)?;
 
     let vars = resolver::parse_var_flags(&args.var)?;
 
     print_banner(&config.metadata);
 
-    let available_steps: Vec<config::Step> = if let Some(ref group) = args.group {
-        filter_by_group(&config.steps, group)
-            .into_iter()
-            .cloned()
-            .collect()
-    } else {
-        config.steps.clone()
+    // Apply profile group filter (intersection with --group CLI flag).
+    let effective_group: Option<String> = match (args.group.as_deref(), profile.groups.is_empty()) {
+        (Some(g), _) if !profile.groups.is_empty() => {
+            // Both --group and profile.groups set: use --group only if it's in profile.groups.
+            if profile.groups.iter().any(|pg| pg == g) {
+                Some(g.to_string())
+            } else {
+                // Group not in profile: no steps match.
+                Some("__no_match__".to_string())
+            }
+        }
+        (Some(g), _) => Some(g.to_string()),
+        (None, false) => None, // profile.groups non-empty but --group not set: handled below
+        (None, true) => None,
+    };
+
+    let available_steps: Vec<config::Step> = {
+        let mut steps: Vec<config::Step> = if let Some(ref group) = effective_group {
+            filter_by_group(&config.steps, group)
+                .into_iter()
+                .cloned()
+                .collect()
+        } else if !profile.groups.is_empty() {
+            // Profile restricts to specific groups (no --group CLI flag).
+            config
+                .steps
+                .iter()
+                .filter(|s| {
+                    s.group
+                        .as_deref()
+                        .map(|g| profile.groups.iter().any(|pg| pg == g))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        } else {
+            config.steps.clone()
+        };
+
+        // Apply profile excluded_steps.
+        if !profile.excluded_steps.is_empty() {
+            steps.retain(|s| !profile.excluded_steps.contains(&s.name));
+        }
+
+        steps
     };
 
     if args.list {
@@ -474,6 +571,9 @@ fn run_run(args: &RunArgs) -> Result<()> {
         pick_steps(&available_steps)?
     };
 
+    // Profile skip_confirms: treat as --yes for confirm steps.
+    let effective_yes = args.yes || profile.skip_confirms;
+
     if args.dry_run {
         println!("Dry run — the following would execute:");
         for step in &selected {
@@ -483,9 +583,9 @@ fn run_run(args: &RunArgs) -> Result<()> {
         return Ok(());
     }
 
-    validate_dependencies(&mut selected, &config.steps, args.yes)?;
+    validate_dependencies(&mut selected, &config.steps, effective_yes)?;
 
-    if !args.all && !args.yes {
+    if !args.all && !effective_yes {
         let proceed = inquire::Confirm::new("Run selected steps?")
             .with_default(true)
             .prompt()?;
@@ -496,21 +596,81 @@ fn run_run(args: &RunArgs) -> Result<()> {
 
     let mut executed: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut ran_names: Vec<String> = Vec::new();
-    for step in &selected {
+
+    // Process steps, grouping consecutive parallel=true steps that have no
+    // confirm=true (which would require interactive TTY, incompatible with
+    // concurrent output).
+    let mut i = 0;
+    while i < selected.len() {
+        let step = &selected[i];
+
         if executed.contains(&step.name) {
+            i += 1;
             continue;
         }
-        print_step_header(step);
-        match execute_step(step, &config.metadata, args.yes, &vars) {
-            Ok(()) => {
-                print_success(step);
-                executed.insert(step.name.clone());
-                ran_names.push(step.name.clone());
+
+        // Check if this is the start of a parallel group.
+        if step.parallel && !step.confirm {
+            // Collect consecutive parallel=true, confirm=false steps.
+            let mut group: Vec<&config::Step> = Vec::new();
+            let mut j = i;
+            while j < selected.len() {
+                let s = &selected[j];
+                if s.parallel && !s.confirm && !executed.contains(&s.name) {
+                    group.push(s);
+                    j += 1;
+                } else {
+                    break;
+                }
             }
-            Err(e) => {
-                print_failure(step);
-                return Err(e);
+
+            if group.len() == 1 {
+                // Single parallel step — run sequentially to avoid overhead.
+                let s = group[0];
+                print_step_header(s);
+                match execute_step(s, &config.metadata, effective_yes, &vars) {
+                    Ok(()) => {
+                        print_success(s);
+                        executed.insert(s.name.clone());
+                        ran_names.push(s.name.clone());
+                    }
+                    Err(e) => {
+                        print_failure(s);
+                        return Err(e);
+                    }
+                }
+                i += 1;
+            } else {
+                // True parallel group.
+                match execute_parallel_group(&group, &config.metadata, &vars) {
+                    Ok(()) => {
+                        for s in &group {
+                            executed.insert(s.name.clone());
+                            ran_names.push(s.name.clone());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: parallel group failed");
+                        return Err(e);
+                    }
+                }
+                i = j;
             }
+        } else {
+            // Sequential step.
+            print_step_header(step);
+            match execute_step(step, &config.metadata, effective_yes, &vars) {
+                Ok(()) => {
+                    print_success(step);
+                    executed.insert(step.name.clone());
+                    ran_names.push(step.name.clone());
+                }
+                Err(e) => {
+                    print_failure(step);
+                    return Err(e);
+                }
+            }
+            i += 1;
         }
     }
 

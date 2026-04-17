@@ -153,6 +153,37 @@ pub const STEP_FIELDS: &[FieldSpec] = &[
         description: "Environment variables merged into the child process environment. Values support {{placeholder}} interpolation. No tilde or $VAR expansion.",
         added_in: "v0.3.0",
     },
+    FieldSpec {
+        name: "parallel",
+        ty: "bool",
+        required: false,
+        description: "When true, this step may execute concurrently with other parallel=true steps that have no dependency relationship.",
+        added_in: "v0.4.0",
+    },
+];
+
+pub const PROFILE_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "skip_confirms",
+        ty: "bool",
+        required: false,
+        description: "When true, all confirm=true steps skip the per-step confirmation prompt within this profile.",
+        added_in: "v0.4.0",
+    },
+    FieldSpec {
+        name: "excluded_steps",
+        ty: "array<string>",
+        required: false,
+        description: "Step names to exclude from selection when this profile is active.",
+        added_in: "v0.4.0",
+    },
+    FieldSpec {
+        name: "groups",
+        ty: "array<string>",
+        required: false,
+        description: "When non-empty, restricts the picker to steps whose group matches one of the listed values.",
+        added_in: "v0.4.0",
+    },
 ];
 
 /// The complete schema: all tables and their fields.
@@ -164,6 +195,10 @@ pub const SCHEMA: &[TableSpec] = &[
     TableSpec {
         name: "steps",
         fields: STEP_FIELDS,
+    },
+    TableSpec {
+        name: "profiles.<name>",
+        fields: PROFILE_FIELDS,
     },
 ];
 
@@ -261,7 +296,13 @@ mod tests {
             "prompts",
             "raw",
             "env",
+            "parallel",
         ]
+    }
+
+    /// Hand-maintained list of expected profile field names (v0.4.0).
+    fn expected_profile_fields() -> Vec<&'static str> {
+        vec!["skip_confirms", "excluded_steps", "groups"]
     }
 
     /// Hand-maintained list of expected metadata field names after Phase A.
@@ -335,6 +376,7 @@ mod tests {
         let all_real: std::collections::HashSet<&str> = expected_step_fields()
             .into_iter()
             .chain(expected_metadata_fields())
+            .chain(expected_profile_fields())
             .collect();
 
         for table in SCHEMA {

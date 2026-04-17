@@ -22,13 +22,18 @@ pub const KNOWN_KEYS: &[&str] = &[
     "group",
     "just_no_deps",
     "just_recipe",
+    "parallel",
     "prompts",
     "raw",
+    // Profile fields
+    "skip_confirms",
+    "excluded_steps",
+    "groups",
 ];
 
 /// Top-level table names in runsteps.toml (used for suggestion when an unknown
 /// key appears at the Config level rather than inside a table).
-const KNOWN_TOP_LEVEL_KEYS: &[&str] = &["metadata", "steps"];
+const KNOWN_TOP_LEVEL_KEYS: &[&str] = &["metadata", "steps", "profiles"];
 
 /// Suggest the closest key from a key list for an unknown field name.
 /// Returns Some(suggestion) if Damerau-Levenshtein distance <= max(2, ceil(target_len / 3)).
@@ -64,14 +69,34 @@ fn suggest_any_key(unknown: &str) -> Option<&'static str> {
         .or_else(|| suggest_from(unknown, KNOWN_KEYS))
 }
 
+/// A named profile that adjusts step selection and confirmation behavior.
+///
+/// Profiles are activated with `--profile <name>`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    /// When true, all `confirm = true` steps skip the per-step prompt within this profile.
+    #[serde(default)]
+    pub skip_confirms: bool,
+    /// Step names to exclude from selection when this profile is active.
+    #[serde(default)]
+    pub excluded_steps: Vec<String>,
+    /// When non-empty, restricts the picker to steps whose group is in this list.
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub metadata: Metadata,
     pub steps: Vec<Step>,
+    /// Named profiles for pre-configured step sets.
+    #[serde(default)]
+    pub profiles: HashMap<String, Profile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
@@ -114,6 +139,10 @@ pub struct Step {
     /// Values support `{{placeholder}}` interpolation. No tilde or $VAR expansion.
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// When `true`, this step may execute concurrently with other `parallel = true`
+    /// steps that have no dependency relationship.
+    #[serde(default)]
+    pub parallel: bool,
 }
 
 impl std::fmt::Display for Step {
@@ -230,6 +259,7 @@ mod tests {
             prompts: HashMap::new(),
             raw: false,
             env: HashMap::new(),
+            parallel: false,
         }
     }
 
@@ -320,6 +350,7 @@ just_recipe = "deploy"
                 working_directory: None,
             },
             steps: vec![make_step("a", Some("echo a"), None)],
+            profiles: HashMap::new(),
         };
         assert!(config.validate().is_ok());
     }
@@ -334,6 +365,7 @@ just_recipe = "deploy"
                 working_directory: None,
             },
             steps: vec![],
+            profiles: HashMap::new(),
         };
         assert!(config.validate().is_err());
     }
@@ -360,7 +392,9 @@ just_recipe = "deploy"
                 prompts: HashMap::new(),
                 raw: false,
                 env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("neither"));
@@ -388,7 +422,9 @@ just_recipe = "deploy"
                 prompts: HashMap::new(),
                 raw: false,
                 env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("both"));
@@ -407,6 +443,7 @@ just_recipe = "deploy"
                 make_step("dup", Some("echo 1"), None),
                 make_step("dup", Some("echo 2"), None),
             ],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("Duplicate"));
@@ -434,7 +471,9 @@ just_recipe = "deploy"
                 prompts: HashMap::new(),
                 raw: false,
                 env: HashMap::new(),
+                parallel: false,
             }],
+            profiles: HashMap::new(),
         };
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("unknown step"));
@@ -466,7 +505,14 @@ just_recipe = "deploy"
             "prompts",
             "raw",
             "env",
+            "parallel",
         ]
+    }
+
+    /// Hand-maintained list of all Profile struct fields.
+    /// MAINTENANCE: If you add a field to Profile, update this list AND KNOWN_KEYS.
+    fn profile_fields() -> Vec<&'static str> {
+        vec!["skip_confirms", "excluded_steps", "groups"]
     }
 
     /// Every struct field must appear in KNOWN_KEYS (forward drift check).
@@ -475,6 +521,7 @@ just_recipe = "deploy"
         let all_fields: Vec<&str> = metadata_fields()
             .into_iter()
             .chain(step_fields())
+            .chain(profile_fields())
             .collect();
 
         let key_set: HashSet<&str> = KNOWN_KEYS.iter().copied().collect();
@@ -497,6 +544,7 @@ just_recipe = "deploy"
         let all_fields: HashSet<&str> = metadata_fields()
             .into_iter()
             .chain(step_fields())
+            .chain(profile_fields())
             .collect();
 
         let phantom: Vec<&str> = KNOWN_KEYS
