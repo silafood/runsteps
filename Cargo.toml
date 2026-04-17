@@ -38,3 +38,5 @@ tag-name = "v{{version}}"
 push = true
 # Allow running from master (cargo-release defaults to refusing non-main branches).
 allow-branch = ["master"]
+# Auto-generate changelog entry before cutting a release tag.
+pre-release-hook = "git-cliff --tag {{version}} --unreleased --prepend CHANGELOG.md"
