@@ -84,6 +84,10 @@ mod tests {
             group: group.map(String::from),
             confirm: false,
             depends_on: depends_on.into_iter().map(String::from).collect(),
+            args: vec![],
+            prompts: std::collections::HashMap::new(),
+            raw: false,
+            env: std::collections::HashMap::new(),
         }
     }
 

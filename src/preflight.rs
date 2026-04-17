@@ -58,6 +58,10 @@ mod tests {
             group: None,
             confirm: false,
             depends_on: vec![],
+            args: vec![],
+            prompts: std::collections::HashMap::new(),
+            raw: false,
+            env: std::collections::HashMap::new(),
         }
     }
 

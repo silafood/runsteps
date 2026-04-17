@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// All field names across Metadata and Step structs that exist after Phase A (US-002, US-003).
 ///
@@ -14,12 +14,16 @@ pub const KNOWN_KEYS: &[&str] = &[
     "justfile",
     "working_directory",
     // Step fields
+    "args",
     "command",
     "confirm",
     "depends_on",
+    "env",
     "group",
     "just_no_deps",
     "just_recipe",
+    "prompts",
+    "raw",
 ];
 
 /// Top-level table names in runsteps.toml (used for suggestion when an unknown
@@ -96,6 +100,20 @@ pub struct Step {
     pub confirm: bool,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Additional arguments passed to the command or just recipe.
+    /// Supports `{{placeholder}}` interpolation resolved from `--var` or `prompts`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Map of placeholder name to human-readable prompt text for interactive resolution.
+    #[serde(default)]
+    pub prompts: HashMap<String, String>,
+    /// When `true`, skip shell-escaping of substituted values in `command` steps.
+    #[serde(default)]
+    pub raw: bool,
+    /// Environment variables merged into the child process environment.
+    /// Values support `{{placeholder}}` interpolation. No tilde or $VAR expansion.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 impl std::fmt::Display for Step {
@@ -208,6 +226,10 @@ mod tests {
             group: None,
             confirm: false,
             depends_on: vec![],
+            args: vec![],
+            prompts: HashMap::new(),
+            raw: false,
+            env: HashMap::new(),
         }
     }
 
@@ -334,6 +356,10 @@ just_recipe = "deploy"
                 group: None,
                 confirm: false,
                 depends_on: vec![],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
             }],
         };
         let err = config.validate().unwrap_err().to_string();
@@ -358,6 +384,10 @@ just_recipe = "deploy"
                 group: None,
                 confirm: false,
                 depends_on: vec![],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
             }],
         };
         let err = config.validate().unwrap_err().to_string();
@@ -400,6 +430,10 @@ just_recipe = "deploy"
                 group: None,
                 confirm: false,
                 depends_on: vec!["nonexistent".to_string()],
+                args: vec![],
+                prompts: HashMap::new(),
+                raw: false,
+                env: HashMap::new(),
             }],
         };
         let err = config.validate().unwrap_err().to_string();
@@ -428,6 +462,10 @@ just_recipe = "deploy"
             "group",
             "confirm",
             "depends_on",
+            "args",
+            "prompts",
+            "raw",
+            "env",
         ]
     }
 

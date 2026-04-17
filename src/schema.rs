@@ -125,6 +125,34 @@ pub const STEP_FIELDS: &[FieldSpec] = &[
         description: "Names of steps that must also be selected.",
         added_in: "v0.1.0",
     },
+    FieldSpec {
+        name: "args",
+        ty: "array<string>",
+        required: false,
+        description: "Additional arguments passed to the command or just recipe. Supports {{placeholder}} interpolation resolved from --var or prompts.",
+        added_in: "v0.3.0",
+    },
+    FieldSpec {
+        name: "prompts",
+        ty: "object<string,string>",
+        required: false,
+        description: "Map of placeholder name to human-readable prompt text for interactive resolution of {{placeholder}} in args and env values.",
+        added_in: "v0.3.0",
+    },
+    FieldSpec {
+        name: "raw",
+        ty: "bool",
+        required: false,
+        description: "When true, skip shell-escaping of substituted placeholder values in command steps. The user accepts responsibility for injection safety.",
+        added_in: "v0.3.0",
+    },
+    FieldSpec {
+        name: "env",
+        ty: "object<string,string>",
+        required: false,
+        description: "Environment variables merged into the child process environment. Values support {{placeholder}} interpolation. No tilde or $VAR expansion.",
+        added_in: "v0.3.0",
+    },
 ];
 
 /// The complete schema: all tables and their fields.
@@ -146,6 +174,11 @@ fn field_to_json_schema_type(field: &FieldSpec) -> Value {
         "array<string>" => json!({
             "type": "array",
             "items": { "type": "string" },
+            "description": field.description
+        }),
+        "object<string,string>" => json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
             "description": field.description
         }),
         _ => json!({ "type": "string", "description": field.description }),
@@ -224,6 +257,10 @@ mod tests {
             "group",
             "confirm",
             "depends_on",
+            "args",
+            "prompts",
+            "raw",
+            "env",
         ]
     }
 
