@@ -38,5 +38,11 @@ tag-name = "v{{version}}"
 push = true
 # Allow running from master (cargo-release defaults to refusing non-main branches).
 allow-branch = ["master"]
-# Auto-generate changelog entry before cutting a release tag.
-pre-release-hook = "git-cliff --tag {{version}} --unreleased --prepend CHANGELOG.md"
+# Auto-generate changelog entry before cutting a release tag. The hook
+# self-installs git-cliff if it is missing so `cargo release` works on a
+# fresh checkout or in CI without a preinstall step.
+pre-release-hook = [
+    "sh",
+    "-c",
+    "set -e; if ! command -v git-cliff >/dev/null 2>&1; then echo '==> installing git-cliff (one-time; ~2min compile)...' >&2; cargo install --locked git-cliff; fi; git-cliff --tag {{version}} --unreleased --prepend CHANGELOG.md",
+]

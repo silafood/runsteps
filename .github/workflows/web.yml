@@ -27,16 +27,16 @@ jobs:
       - name: Build runsteps for schema generation
         run: cargo build --release --quiet
 
-      - name: Generate schema.json (before oranda build)
-        run: |
-          mkdir -p public
-          ./target/release/runsteps schema --json > public/schema.json
-
       - name: Install oranda
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/oranda/releases/latest/download/oranda-installer.sh | sh
 
       - name: Build site
         run: oranda build
+
+      # oranda regenerates public/ from scratch, so any files written before
+      # `oranda build` are erased. Generate /schema.json AFTER the oranda build.
+      - name: Generate schema.json
+        run: ./target/release/runsteps schema --json > public/schema.json
 
       - name: Generate llms.txt TOC
         run: |
