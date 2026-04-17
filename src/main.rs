@@ -5,8 +5,10 @@ use clap_complete::Shell;
 mod config;
 mod display;
 mod executor;
+mod history;
 mod picker;
 mod preflight;
+mod resolver;
 mod schema;
 
 use config::load_config;
@@ -51,6 +53,14 @@ pub struct RunArgs {
     /// Filter steps by group
     #[arg(short, long)]
     pub group: Option<String>,
+
+    /// Re-run the last successful session for this config [deprecated form: use `runsteps again`]
+    #[arg(long, hide = true)]
+    pub again: bool,
+
+    /// Set a placeholder value: --var key=value (repeatable)
+    #[arg(long, action = clap::ArgAction::Append, num_args = 1..)]
+    pub var: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -97,9 +107,21 @@ pub struct CompletionsArgs {
 
 #[derive(Parser, Debug)]
 pub struct AgainArgs {
+    /// Path to config file
+    #[arg(short, long, default_value = "runsteps.toml")]
+    pub config: String,
+
     /// Skip confirmations
     #[arg(short, long)]
     pub yes: bool,
+
+    /// Dry run — show what would execute without executing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Set a placeholder value: --var key=value (repeatable)
+    #[arg(long, action = clap::ArgAction::Append, num_args = 1..)]
+    pub var: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +301,9 @@ fn run_init(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_list(config_path: &str, group: Option<&str>) -> Result<()> {
+fn run_list(config_path: &str, group: Option<&str>, json_mode: bool) -> Result<()> {
     let config = load_config(config_path)?;
     config.validate()?;
-    print_banner(&config.metadata);
     let steps: Vec<config::Step> = if let Some(g) = group {
         filter_by_group(&config.steps, g)
             .into_iter()
@@ -291,6 +312,30 @@ fn run_list(config_path: &str, group: Option<&str>) -> Result<()> {
     } else {
         config.steps.clone()
     };
+
+    if json_mode {
+        let step_values: Vec<serde_json::Value> = steps
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "group": s.group,
+                    "depends_on": s.depends_on,
+                    "type": if s.just_recipe.is_some() { "just_recipe" } else { "command" },
+                    "confirm": s.confirm,
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "version": 1,
+            "steps": step_values,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    print_banner(&config.metadata);
     print_step_list(&steps);
     Ok(())
 }
@@ -306,16 +351,100 @@ fn run_graph(_args: &GraphArgs) -> Result<()> {
     std::process::exit(2);
 }
 
-fn run_again(_args: &AgainArgs) -> Result<()> {
-    eprintln!("again subcommand is not yet implemented (coming in Phase C)");
-    std::process::exit(2);
+fn run_again(args: &AgainArgs) -> Result<()> {
+    let config_path = std::fs::canonicalize(&args.config)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| args.config.clone());
+
+    let entry = match history::latest_entry_for(&config_path) {
+        Some(e) => e,
+        None => {
+            anyhow::bail!(
+                "no history found for '{}'; run without --again first",
+                config_path
+            );
+        }
+    };
+
+    let config = load_config(&args.config)?;
+    config.validate()?;
+
+    // Check if the config has changed since the last run.
+    let config_bytes = std::fs::read(&args.config)?;
+    let current_sha = history::sha256_hex(&config_bytes);
+    if current_sha != entry.config_sha256 {
+        eprintln!("warning: config has changed since last run (SHA-256 mismatch)");
+    }
+
+    ensure_just_available(&config.steps)?;
+    print_banner(&config.metadata);
+
+    let vars = resolver::parse_var_flags(&args.var)?;
+
+    // Reconstruct the step list from history, skipping steps no longer present.
+    let step_map: std::collections::HashMap<&str, &config::Step> =
+        config.steps.iter().map(|s| (s.name.as_str(), s)).collect();
+
+    let mut selected: Vec<config::Step> = Vec::new();
+    for name in &entry.selected {
+        match step_map.get(name.as_str()) {
+            Some(&step) => selected.push(step.clone()),
+            None => eprintln!("skipping missing step {}", name),
+        }
+    }
+
+    if selected.is_empty() {
+        anyhow::bail!("no steps to replay (all previously selected steps are missing)");
+    }
+
+    if args.dry_run {
+        println!("Dry run — the following would execute (replayed):");
+        for step in &selected {
+            print_dry_run_header(step);
+            dry_run_step(step, &config.metadata);
+        }
+        return Ok(());
+    }
+
+    let mut executed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for step in &selected {
+        if executed.contains(&step.name) {
+            continue;
+        }
+        print_step_header(step);
+        match execute_step(step, &config.metadata, args.yes, &vars) {
+            Ok(()) => {
+                print_success(step);
+                executed.insert(step.name.clone());
+            }
+            Err(e) => {
+                print_failure(step);
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn run_run(args: &RunArgs) -> Result<()> {
+    // --again flag at top level delegates to again logic
+    if args.again {
+        let again_args = AgainArgs {
+            config: args.config.clone(),
+            yes: args.yes,
+            dry_run: args.dry_run,
+            var: args.var.clone(),
+        };
+        return run_again(&again_args);
+    }
+
     let config = load_config(&args.config)?;
     config.validate()?;
 
     ensure_just_available(&config.steps)?;
+
+    let vars = resolver::parse_var_flags(&args.var)?;
 
     print_banner(&config.metadata);
 
@@ -366,20 +495,41 @@ fn run_run(args: &RunArgs) -> Result<()> {
     }
 
     let mut executed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ran_names: Vec<String> = Vec::new();
     for step in &selected {
         if executed.contains(&step.name) {
             continue;
         }
         print_step_header(step);
-        match execute_step(step, &config.metadata, args.yes) {
+        match execute_step(step, &config.metadata, args.yes, &vars) {
             Ok(()) => {
                 print_success(step);
                 executed.insert(step.name.clone());
+                ran_names.push(step.name.clone());
             }
             Err(e) => {
                 print_failure(step);
                 return Err(e);
             }
+        }
+    }
+
+    // Persist history if any steps ran.
+    if !ran_names.is_empty() {
+        let config_path = std::fs::canonicalize(&args.config)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| args.config.clone());
+        let config_bytes = std::fs::read(&args.config).unwrap_or_default();
+        let config_sha256 = history::sha256_hex(&config_bytes);
+        let entry = history::HistoryEntry {
+            config_path,
+            config_sha256,
+            selected: ran_names,
+            timestamp: history::now_rfc3339(),
+        };
+        // Non-fatal — history save failure should not abort the run.
+        if let Err(e) = history::save_history_entry(entry) {
+            eprintln!("warning: could not save history: {}", e);
         }
     }
 
@@ -404,26 +554,20 @@ fn run() -> Result<()> {
             }
             if cli.run_args.list {
                 emit_deprecation("--list", "list");
-                let config = load_config(&cli.run_args.config)?;
-                config.validate()?;
-                print_banner(&config.metadata);
-                let steps: Vec<config::Step> = if let Some(ref group) = cli.run_args.group {
-                    filter_by_group(&config.steps, group)
-                        .into_iter()
-                        .cloned()
-                        .collect()
-                } else {
-                    config.steps.clone()
-                };
-                print_step_list(&steps);
-                return Ok(());
+                return run_list(
+                    &cli.run_args.config,
+                    cli.run_args.group.as_deref(),
+                    false,
+                );
             }
             run_run(&cli.run_args)
         }
         Some(Commands::Run(args)) => run_run(&args),
         Some(Commands::Schema(args)) => run_schema(&args),
         Some(Commands::Init(args)) => run_init(&args.path),
-        Some(Commands::List(args)) => run_list(&args.config.clone(), args.group.as_deref()),
+        Some(Commands::List(args)) => {
+            run_list(&args.config.clone(), args.group.as_deref(), args.json)
+        }
         Some(Commands::Graph(args)) => run_graph(&args),
         Some(Commands::Completions(args)) => run_completions(&args),
         Some(Commands::Again(args)) => run_again(&args),
