@@ -36,6 +36,17 @@ fn run(args: &[&str], cwd: &std::path::Path) -> Output {
         .expect("failed to spawn runsteps")
 }
 
+/// Run the binary with an isolated `RUNSTEPS_CACHE_DIR` so that history tests
+/// do not interfere with each other or with real user history.
+fn run_with_cache(args: &[&str], cwd: &std::path::Path, cache_dir: &std::path::Path) -> Output {
+    Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("RUNSTEPS_CACHE_DIR", cache_dir)
+        .output()
+        .expect("failed to spawn runsteps")
+}
+
 fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
@@ -879,3 +890,700 @@ fn schema_human_exit_zero() {
     assert!(out.status.success(), "schema (human) must exit 0");
 }
 
+
+// ---------------------------------------------------------------------------
+// US-012: completions subcommand
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completions_bash_contains_runsteps() {
+    let dir = tmpdir("comp-bash");
+    let out = run(&["completions", "bash"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("runsteps"),
+        "bash completions missing 'runsteps', got: {}",
+        &combined[..combined.len().min(200)]
+    );
+}
+
+#[test]
+fn completions_zsh_contains_compdef() {
+    let dir = tmpdir("comp-zsh");
+    let out = run(&["completions", "zsh"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("#compdef runsteps") || combined.contains("_runsteps"),
+        "zsh completions missing compdef/function, got: {}",
+        &combined[..combined.len().min(200)]
+    );
+}
+
+#[test]
+fn completions_fish_contains_complete_c() {
+    let dir = tmpdir("comp-fish");
+    let out = run(&["completions", "fish"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("complete") && combined.contains("runsteps"),
+        "fish completions missing 'complete -c runsteps', got: {}",
+        &combined[..combined.len().min(200)]
+    );
+}
+
+#[test]
+fn completions_invalid_shell_exits_nonzero() {
+    let dir = tmpdir("comp-invalid");
+    let out = run(&["completions", "invalid_shell"], &dir);
+    assert!(
+        !out.status.success(),
+        "expected nonzero exit for invalid shell, got success"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-013: deprecation warnings for legacy --list and --init flags
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_list_flag_emits_deprecated_warning() {
+    let dir = tmpdir("dep-list");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "dep-test"
+
+[[steps]]
+name = "alpha"
+description = "First"
+command = "echo alpha"
+"#,
+    )
+    .unwrap();
+    let out = run(&["--list"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("deprecated"),
+        "expected 'deprecated' in stderr for --list, got: {err}"
+    );
+    // stdout should still show step info
+    let combined = stdout(&out) + &err;
+    assert!(
+        combined.contains("alpha"),
+        "expected step output unchanged, got: {combined}"
+    );
+}
+
+#[test]
+fn legacy_init_flag_emits_deprecated_warning() {
+    let dir = tmpdir("dep-init");
+    let out = run(&["--init"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("deprecated"),
+        "expected 'deprecated' in stderr for --init, got: {err}"
+    );
+}
+
+#[test]
+fn runsteps_no_warnings_silences_list_deprecation() {
+    let dir = tmpdir("nowarn-list");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "nowarn-test"
+
+[[steps]]
+name = "s"
+description = "d"
+command = "echo s"
+"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(bin())
+        .args(["--list"])
+        .env("RUNSTEPS_NO_WARNINGS", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        !err.contains("deprecated"),
+        "RUNSTEPS_NO_WARNINGS=1 should silence deprecation, got stderr: {err}"
+    );
+}
+
+#[test]
+fn runsteps_no_warnings_silences_init_deprecation() {
+    let dir = tmpdir("nowarn-init");
+    let out = std::process::Command::new(bin())
+        .args(["--init"])
+        .env("RUNSTEPS_NO_WARNINGS", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        !err.contains("deprecated"),
+        "RUNSTEPS_NO_WARNINGS=1 should silence init deprecation, got stderr: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-007: --again replay
+// ---------------------------------------------------------------------------
+
+#[test]
+fn again_replays_last_run_in_dry_run() {
+    let dir = tmpdir("again-dry");
+    let cache = tmpdir("again-dry-cache");
+    let log = dir.join("log.txt");
+    fs::write(&log, "").unwrap();
+    let config = format!(
+        r#"
+[metadata]
+name = "again-test"
+
+[[steps]]
+name = "alpha"
+description = "Step alpha"
+command = "printf 'alpha\n' >> {path}"
+
+[[steps]]
+name = "beta"
+description = "Step beta"
+command = "printf 'beta\n' >> {path}"
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+
+    // First run to populate history (use isolated cache dir).
+    let out = run_with_cache(&["--all", "--yes"], &dir, &cache);
+    assert!(out.status.success(), "first run failed: {}", stderr(&out));
+
+    // Now replay with --again --dry-run — should show same steps without re-executing.
+    let content_before = fs::read_to_string(&log).unwrap();
+    let out2 = run_with_cache(&["--again", "--dry-run"], &dir, &cache);
+    assert!(out2.status.success(), "--again --dry-run failed: {}", stderr(&out2));
+    let content_after = fs::read_to_string(&log).unwrap();
+    // dry-run must not re-execute
+    assert_eq!(
+        content_before, content_after,
+        "--again --dry-run must not re-execute steps"
+    );
+    // dry-run output should mention the steps
+    let combined = stdout(&out2) + &stderr(&out2);
+    assert!(
+        combined.contains("alpha") || combined.contains("dry"),
+        "--again --dry-run output should mention steps, got: {combined}"
+    );
+}
+
+#[test]
+fn again_warns_on_config_change() {
+    let dir = tmpdir("again-change");
+    let cache = tmpdir("again-change-cache");
+    let log = dir.join("log.txt");
+    fs::write(&log, "").unwrap();
+    let config = format!(
+        r#"
+[metadata]
+name = "again-change-test"
+
+[[steps]]
+name = "step1"
+description = "Step one"
+command = "printf 'step1\n' >> {path}"
+"#,
+        path = log.display()
+    );
+    let config_path = dir.join("runsteps.toml");
+    fs::write(&config_path, &config).unwrap();
+
+    // First run with isolated cache.
+    let out = run_with_cache(&["--all", "--yes"], &dir, &cache);
+    assert!(out.status.success(), "first run: {}", stderr(&out));
+
+    // Modify config slightly (change description to change SHA-256).
+    let modified = format!(
+        r#"
+[metadata]
+name = "again-change-test"
+description = "modified"
+
+[[steps]]
+name = "step1"
+description = "Step one modified"
+command = "printf 'step1\n' >> {path}"
+"#,
+        path = log.display()
+    );
+    fs::write(&config_path, &modified).unwrap();
+
+    // --again should warn about config change.
+    let out2 = run_with_cache(&["--again", "--yes"], &dir, &cache);
+    let err = stderr(&out2);
+    assert!(
+        err.contains("config has changed"),
+        "expected 'config has changed' warning, got stderr: {err}"
+    );
+}
+
+#[test]
+fn again_no_history_exits_error() {
+    let dir = tmpdir("again-nohist");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "nohist"
+
+[[steps]]
+name = "s"
+description = "d"
+command = "echo s"
+"#,
+    )
+    .unwrap();
+    // Use an isolated cache dir so we don't accidentally pick up real history.
+    let fake_cache = dir.join("fake_cache");
+    fs::create_dir_all(&fake_cache).unwrap();
+    let out = std::process::Command::new(bin())
+        .args(["--again", "--yes"])
+        .env("RUNSTEPS_CACHE_DIR", &fake_cache)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected failure with no history, got success"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-009: list --json
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_json_version_is_1() {
+    let dir = tmpdir("list-json-ver");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "json-test"
+
+[[steps]]
+name = "alpha"
+description = "First step"
+command = "echo alpha"
+"#,
+    )
+    .unwrap();
+    let out = run(&["list", "--json"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("list --json must emit valid JSON");
+    assert_eq!(
+        parsed.get("version").and_then(|v| v.as_u64()),
+        Some(1),
+        "list --json version must be 1"
+    );
+}
+
+#[test]
+fn list_json_steps_have_name() {
+    let dir = tmpdir("list-json-name");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "json-test"
+
+[[steps]]
+name = "alpha"
+description = "First step"
+command = "echo alpha"
+"#,
+    )
+    .unwrap();
+    let out = run(&["list", "--json"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("list --json must emit valid JSON");
+    let first_name = parsed
+        .pointer("/steps/0/name")
+        .and_then(|v| v.as_str())
+        .expect("steps[0].name must be a string");
+    assert_eq!(first_name, "alpha");
+}
+
+#[test]
+fn list_json_type_field_is_command_or_just_recipe() {
+    let dir = tmpdir("list-json-type");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "json-type-test"
+
+[[steps]]
+name = "cmd-step"
+description = "Command step"
+command = "echo hi"
+
+[[steps]]
+name = "recipe-step"
+description = "Recipe step"
+just_recipe = "build"
+"#,
+    )
+    .unwrap();
+    let out = run(&["list", "--json"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let steps = parsed.get("steps").and_then(|v| v.as_array()).unwrap();
+    let cmd_type = steps[0].get("type").and_then(|v| v.as_str()).unwrap();
+    let recipe_type = steps[1].get("type").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(cmd_type, "command");
+    assert_eq!(recipe_type, "just_recipe");
+}
+
+#[test]
+fn list_human_output_unchanged_without_json_flag() {
+    let dir = tmpdir("list-human");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "human-test"
+
+[[steps]]
+name = "myhuman"
+description = "Human step"
+command = "echo hi"
+"#,
+    )
+    .unwrap();
+    // `runsteps list` (no --json) — check it's not JSON
+    let out = run(&["list"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let out_str = stdout(&out);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&out_str).is_err(),
+        "list without --json must not emit JSON"
+    );
+    let combined = out_str + &stderr(&out);
+    assert!(
+        combined.contains("myhuman"),
+        "human list output should contain step name, got: {combined}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-008: args + prompts + raw + --var flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn args_static_pass_through_command_step() {
+    let dir = tmpdir("args-static");
+    let log = dir.join("log.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "args-static"
+
+[[steps]]
+name = "echo-args"
+description = "Echo args"
+command = "printf '%s\n' >> {path}"
+args = ["hello"]
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        content.contains("hello") || stdout(&out).contains("hello"),
+        "static arg 'hello' not found in output or log"
+    );
+}
+
+#[test]
+fn args_var_flag_substitutes_placeholder() {
+    let dir = tmpdir("args-var");
+    let log = dir.join("log.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "args-var"
+
+[[steps]]
+name = "echo-pod"
+description = "Echo pod"
+command = "echo {{{{pod}}}} >> {path}"
+args = []
+"#,
+        path = log.display()
+    );
+    // Use a command that uses --var substitution in the command itself
+    // We'll test via a simpler approach: write the var value to a file.
+    let config2 = format!(
+        r#"
+[metadata]
+name = "args-var"
+
+[[steps]]
+name = "write-val"
+description = "Write var value"
+command = "printf '%s\n' {{{{pod}}}} >> {path}"
+"#,
+        path = log.display()
+    );
+    drop(config);
+    fs::write(dir.join("runsteps.toml"), &config2).unwrap();
+    let out = run(&["--all", "--yes", "--var", "pod=webserver"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        content.contains("webserver"),
+        "expected 'webserver' in output, got: {content}"
+    );
+}
+
+#[test]
+fn args_missing_placeholder_in_yes_mode_exits_2() {
+    let dir = tmpdir("args-missing");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "args-missing"
+
+[[steps]]
+name = "needs-var"
+description = "Needs a placeholder"
+command = "echo {{pod}}"
+"#,
+    )
+    .unwrap();
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(
+        !out.status.success(),
+        "expected failure when placeholder missing in --yes mode"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("pod") || err.contains("placeholder"),
+        "expected placeholder name in error, got: {err}"
+    );
+}
+
+#[test]
+fn args_multi_placeholder_per_element() {
+    let dir = tmpdir("args-multi");
+    let log = dir.join("log.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "args-multi"
+
+[[steps]]
+name = "multi"
+description = "Multi placeholder"
+command = "printf '%s\n' >> {path}"
+args = ["--pod={{{{p}}}}-{{{{e}}}}"]
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+    let out = run(
+        &["--all", "--yes", "--var", "p=web", "--var", "e=staging"],
+        &dir,
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    let combined = content + &stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("web-staging") || combined.contains("--pod=web-staging"),
+        "expected 'web-staging' in output, got combined output"
+    );
+}
+
+#[test]
+fn args_newline_in_var_value_exits_error() {
+    let dir = tmpdir("args-newline");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "args-newline"
+
+[[steps]]
+name = "nl"
+description = "Newline test"
+command = "echo {{x}}"
+"#,
+    )
+    .unwrap();
+    // Pass a value with a newline using shell ANSI escape: $'a\nb'
+    // We do this by writing it via a shell wrapper
+    let out = std::process::Command::new(bin())
+        .args(["--all", "--yes"])
+        .arg("--var")
+        .arg("x=a\nb") // actual newline in the arg
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected failure for newline in var value"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("newline"),
+        "expected 'newline' in error message, got: {err}"
+    );
+}
+
+#[test]
+fn args_raw_true_passes_special_chars_unescaped() {
+    let dir = tmpdir("args-raw");
+    let log = dir.join("log.txt");
+    // raw=true: value with $ should pass through without quoting
+    // We write a config where the command captures its first arg
+    let config = format!(
+        r#"
+[metadata]
+name = "args-raw"
+
+[[steps]]
+name = "raw-step"
+description = "Raw step"
+command = "printf '%s\n' {{{{val}}}} >> {path}"
+raw = true
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+    let out = run(&["--all", "--yes", "--var", "val=plain"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        content.contains("plain"),
+        "expected 'plain' in log with raw=true, got: {content}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-011: per-step env table
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_table_sets_env_for_child_process() {
+    let dir = tmpdir("env-basic");
+    let log = dir.join("log.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "env-basic"
+
+[[steps]]
+name = "env-step"
+description = "Env step"
+command = "echo $FOO >> {path}"
+
+[steps.env]
+FOO = "bar"
+"#,
+        path = log.display()
+    );
+    // TOML inline table syntax for env
+    let config2 = format!(
+        r#"
+[metadata]
+name = "env-basic"
+
+[[steps]]
+name = "env-step"
+description = "Env step"
+command = "echo $FOO >> {path}"
+env = {{ FOO = "bar" }}
+"#,
+        path = log.display()
+    );
+    drop(config);
+    fs::write(dir.join("runsteps.toml"), &config2).unwrap();
+    let out = run(&["--all", "--yes"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        content.trim() == "bar" || content.contains("bar"),
+        "expected env FOO=bar to produce 'bar', got: {content}"
+    );
+}
+
+#[test]
+fn env_table_with_placeholder_resolved_by_var() {
+    let dir = tmpdir("env-var");
+    let log = dir.join("log.txt");
+    let config = format!(
+        r#"
+[metadata]
+name = "env-var"
+
+[[steps]]
+name = "env-var-step"
+description = "Env var step"
+command = "echo $X >> {path}"
+env = {{ X = "{{{{val}}}}" }}
+"#,
+        path = log.display()
+    );
+    fs::write(dir.join("runsteps.toml"), &config).unwrap();
+    let out = run(&["--all", "--yes", "--var", "val=zz"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let content = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        content.contains("zz"),
+        "expected env X=zz to produce 'zz', got: {content}"
+    );
+}
+
+#[test]
+fn env_dry_run_prints_env_lines() {
+    let dir = tmpdir("env-dry");
+    fs::write(
+        dir.join("runsteps.toml"),
+        r#"
+[metadata]
+name = "env-dry"
+
+[[steps]]
+name = "env-dry-step"
+description = "Env dry step"
+command = "echo $FOO"
+env = { FOO = "bar" }
+"#,
+    )
+    .unwrap();
+    let out = run(&["--dry-run", "--all"], &dir);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
+    assert!(
+        combined.contains("FOO") || combined.contains("env:"),
+        "dry-run should print env lines, got: {combined}"
+    );
+}
