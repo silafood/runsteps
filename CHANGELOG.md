@@ -1,3 +1,45 @@
+## [0.2.0] - 2026-04-17
+
+### 🚀 Features
+
+- *(config)* Structured TOML error reporting with Levenshtein suggestions
+- *(executor)* Just_no_deps conditional --no-deps flag (BREAKING v0.2.0)
+- *(schema)* Src/schema.rs source-of-truth with JSON-Schema draft-07 export
+- *(cli)* Migrate to clap subcommand skeleton with dual-path legacy flags
+- *(cli)* Runsteps schema subcommand with human and --json modes
+- *(cli)* Runsteps completions subcommand via clap_complete
+- *(cli)* Deprecation warnings for legacy --list/--init flags
+- *(history)* --again replay stored in cache_dir/runsteps/history.json
+- *(args)* {{placeholder}} + prompts + --var with shell-escape per ADR-002
+- *(cli)* Runsteps list --json with versioned output schema
+- *(graph)* Runsteps graph subcommand with petgraph DAG and cycle detection
+- *(profiles)* [profiles.<name>] tables with --profile flag (skip_confirms, excluded_steps, groups)
+- *(executor)* Parallel = true per-step with line-buffered prefixed output
+
+### 🐛 Bug Fixes
+
+- *(preflight)* Skip just check on --dry-run; bail gracefully in non-TTY
+- *(release)* Self-install git-cliff in pre-release-hook; publish schema.json after oranda build
+
+### 🚜 Refactor
+
+- *(cli)* Remove deprecated legacy --list/--init flags (subcommand-only)
+
+### 📚 Documentation
+
+- SCHEMA.md, CHANGELOG, ADR-001, ADR-002, migration guide
+- *(cli)* Remove stale 'coming in Phase X' placeholders from subcommand help
+- *(changelog)* Remove hand-authored placeholder sections
+- *(claude)* Document Conventional Commits + breaking-change + no-co-authored rules
+
+### 🧪 Testing
+
+- Split integration_test.rs into focused per-feature modules
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* .cliff.toml + cargo-release pre-release-hook for auto-changelog
+- *(web)* Publish /schema.json, /llms.txt, /llms-full.txt, JSON-LD SoftwareApplication
 # Changelog
 
 All notable changes to `runsteps` will be documented in this file.
