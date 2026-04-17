@@ -56,13 +56,13 @@ fn stderr(o: &Output) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// --init
+// init subcommand
 // ---------------------------------------------------------------------------
 
 #[test]
 fn init_creates_default_config() {
     let dir = tmpdir("init-default");
-    let out = run(&["--init"], &dir);
+    let out = run(&["init"], &dir);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(dir.join("runsteps.toml").exists(), "config file not created");
     let content = fs::read_to_string(dir.join("runsteps.toml")).unwrap();
@@ -73,7 +73,7 @@ fn init_creates_default_config() {
 #[test]
 fn init_custom_name_appends_toml_extension() {
     let dir = tmpdir("init-custom");
-    let out = run(&["--init", "-c", "myconfig"], &dir);
+    let out = run(&["init", "myconfig"], &dir);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(
         dir.join("myconfig.toml").exists(),
@@ -85,7 +85,7 @@ fn init_custom_name_appends_toml_extension() {
 fn init_refuses_to_overwrite_existing_file() {
     let dir = tmpdir("init-overwrite");
     fs::write(dir.join("runsteps.toml"), "[metadata]\nname=\"x\"\n").unwrap();
-    let out = run(&["--init"], &dir);
+    let out = run(&["init"], &dir);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("already exists"),
@@ -94,7 +94,7 @@ fn init_refuses_to_overwrite_existing_file() {
 }
 
 // ---------------------------------------------------------------------------
-// --list
+// list subcommand
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -119,7 +119,7 @@ command = "echo beta"
     )
     .unwrap();
 
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let combined = stdout(&out) + &stderr(&out);
     assert!(combined.contains("alpha"), "alpha missing from list output");
@@ -449,7 +449,7 @@ fn missing_config_file_reports_error() {
 fn invalid_toml_reports_error() {
     let dir = tmpdir("bad-toml");
     fs::write(dir.join("runsteps.toml"), "this is not valid toml [[[").unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success());
     let combined = stdout(&out) + &stderr(&out);
     assert!(
@@ -477,7 +477,7 @@ depends_on = ["does-not-exist"]
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("does-not-exist") || stderr(&out).contains("unknown"),
@@ -502,7 +502,7 @@ just_recipe = "some-recipe"
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("both"),
@@ -529,7 +529,7 @@ description = "No command or recipe"
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("neither"),
@@ -574,7 +574,7 @@ command = "echo hi"
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success(), "expected failure for unknown field");
     let err = stderr(&out);
     assert!(
@@ -604,7 +604,7 @@ command = "echo hi"
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success(), "expected failure for unknown field");
     let err = stderr(&out);
     // toml 0.8 will report "step" as an unknown field; our suggestion should
@@ -633,7 +633,7 @@ just_recipee = "deploy"
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success(), "expected failure for unknown field");
     let err = stderr(&out);
     assert!(
@@ -664,7 +664,7 @@ completely_bogus_field = 1
 "#,
     )
     .unwrap();
-    let out = run(&["--list"], &dir);
+    let out = run(&["list"], &dir);
     assert!(!out.status.success(), "expected failure for unknown field");
     let err = stderr(&out);
     assert!(
@@ -945,97 +945,70 @@ fn completions_invalid_shell_exits_nonzero() {
 }
 
 // ---------------------------------------------------------------------------
-// US-013: deprecation warnings for legacy --list and --init flags
+// US-016: legacy --list and --init top-level flags are removed (subcommand-only)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn legacy_list_flag_emits_deprecated_warning() {
-    let dir = tmpdir("dep-list");
-    fs::write(
-        dir.join("runsteps.toml"),
-        r#"
-[metadata]
-name = "dep-test"
-
-[[steps]]
-name = "alpha"
-description = "First"
-command = "echo alpha"
-"#,
-    )
-    .unwrap();
+fn legacy_list_flag_exits_nonzero_with_unexpected_argument() {
+    let dir = tmpdir("us016-list");
     let out = run(&["--list"], &dir);
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        !out.status.success(),
+        "expected nonzero exit for removed --list flag"
+    );
     let err = stderr(&out);
     assert!(
-        err.contains("deprecated"),
-        "expected 'deprecated' in stderr for --list, got: {err}"
-    );
-    // stdout should still show step info
-    let combined = stdout(&out) + &err;
-    assert!(
-        combined.contains("alpha"),
-        "expected step output unchanged, got: {combined}"
+        err.contains("unexpected argument") || err.contains("--list"),
+        "expected 'unexpected argument' in stderr, got: {err}"
     );
 }
 
 #[test]
-fn legacy_init_flag_emits_deprecated_warning() {
-    let dir = tmpdir("dep-init");
+fn legacy_init_flag_exits_nonzero_with_unexpected_argument() {
+    let dir = tmpdir("us016-init");
     let out = run(&["--init"], &dir);
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        !out.status.success(),
+        "expected nonzero exit for removed --init flag"
+    );
     let err = stderr(&out);
     assert!(
-        err.contains("deprecated"),
-        "expected 'deprecated' in stderr for --init, got: {err}"
+        err.contains("unexpected argument") || err.contains("--init"),
+        "expected 'unexpected argument' in stderr, got: {err}"
     );
 }
 
 #[test]
-fn runsteps_no_warnings_silences_list_deprecation() {
-    let dir = tmpdir("nowarn-list");
+fn list_subcommand_still_works_after_flag_removal() {
+    let dir = tmpdir("us016-list-subcmd");
     fs::write(
         dir.join("runsteps.toml"),
         r#"
 [metadata]
-name = "nowarn-test"
+name = "list-subcmd-test"
 
 [[steps]]
-name = "s"
-description = "d"
-command = "echo s"
+name = "myalpha"
+description = "First"
+command = "echo myalpha"
 "#,
     )
     .unwrap();
-    let out = std::process::Command::new(bin())
-        .args(["--list"])
-        .env("RUNSTEPS_NO_WARNINGS", "1")
-        .current_dir(&dir)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let err = stderr(&out);
+    let out = run(&["list"], &dir);
+    assert!(out.status.success(), "runsteps list must still work, stderr: {}", stderr(&out));
+    let combined = stdout(&out) + &stderr(&out);
     assert!(
-        !err.contains("deprecated"),
-        "RUNSTEPS_NO_WARNINGS=1 should silence deprecation, got stderr: {err}"
+        combined.contains("myalpha"),
+        "expected step in list output, got: {combined}"
     );
 }
 
 #[test]
-fn runsteps_no_warnings_silences_init_deprecation() {
-    let dir = tmpdir("nowarn-init");
-    let out = std::process::Command::new(bin())
-        .args(["--init"])
-        .env("RUNSTEPS_NO_WARNINGS", "1")
-        .current_dir(&dir)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let err = stderr(&out);
-    assert!(
-        !err.contains("deprecated"),
-        "RUNSTEPS_NO_WARNINGS=1 should silence init deprecation, got stderr: {err}"
-    );
+fn init_subcommand_still_works_after_flag_removal() {
+    let dir = tmpdir("us016-init-subcmd");
+    let out = run(&["init"], &dir);
+    assert!(out.status.success(), "runsteps init must still work, stderr: {}", stderr(&out));
+    assert!(dir.join("runsteps.toml").exists(), "init subcommand should create runsteps.toml");
 }
 
 // ---------------------------------------------------------------------------

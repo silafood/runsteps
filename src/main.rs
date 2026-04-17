@@ -43,14 +43,6 @@ pub struct RunArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// List available steps and exit [deprecated: use `runsteps list`]
-    #[arg(long, hide = true)]
-    pub list: bool,
-
-    /// Generate a template config file and exit [deprecated: use `runsteps init`]
-    #[arg(long, hide = true)]
-    pub init: bool,
-
     /// Filter steps by group
     #[arg(short, long)]
     pub group: Option<String>,
@@ -189,20 +181,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecation helper
-// ---------------------------------------------------------------------------
-
-fn emit_deprecation(flag: &str, replacement: &str) {
-    if std::env::var("RUNSTEPS_NO_WARNINGS").as_deref() == Ok("1") {
-        return;
-    }
-    eprintln!(
-        "warning: top-level flag `{}` is deprecated; use `runsteps {}` instead. Will be removed in v0.5.0.",
-        flag, replacement
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -554,17 +532,6 @@ fn run_run(args: &RunArgs) -> Result<()> {
         steps
     };
 
-    if args.list {
-        emit_deprecation("--list", "list");
-        print_step_list(&available_steps);
-        return Ok(());
-    }
-
-    if args.init {
-        emit_deprecation("--init", "init");
-        return run_init(&args.config);
-    }
-
     let mut selected = if args.all {
         available_steps.clone()
     } else {
@@ -704,24 +671,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => {
-            // Legacy flag dual-path: --list and --init handled inside run_run
-            // with deprecation warnings when the flags are set.
-            // Pure run flow when neither flag is set.
-            if cli.run_args.init {
-                emit_deprecation("--init", "init");
-                return run_init(&cli.run_args.config);
-            }
-            if cli.run_args.list {
-                emit_deprecation("--list", "list");
-                return run_list(
-                    &cli.run_args.config,
-                    cli.run_args.group.as_deref(),
-                    false,
-                );
-            }
-            run_run(&cli.run_args)
-        }
+        None => run_run(&cli.run_args),
         Some(Commands::Run(args)) => run_run(&args),
         Some(Commands::Schema(args)) => run_schema(&args),
         Some(Commands::Init(args)) => run_init(&args.path),
